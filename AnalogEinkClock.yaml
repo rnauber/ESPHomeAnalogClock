@@ -1,0 +1,166 @@
+# Analog Clock for the Lilygo T5-4.7 inch V2.3 E Ink display
+# board support adapted from https://github.com/esphome/feature-requests/issues/1960
+
+esphome:
+  name: AnalogEinkClock
+  platformio_options:
+    board_build.f_flash: 80000000L
+    #board_upload.flash_size: 16MB
+    board_build.flash_mode: qio
+    board_build.psram_type: opi
+    board_build.partitions: default_16MB.csv
+    board_build.arduino.memory_type: qio_opi
+  on_boot:
+    priority: -100
+    then:
+      - pcf8563.read_time
+
+esp32:
+  board: esp32-s3-devkitc-1
+  flash_size: 16MB
+  framework:
+    type: arduino
+#    version: latest
+
+wifi:
+  networks: # add your wifi credentials here!
+    - ssid: !secret wifi_ssid
+      password: !secret wifi_password
+    - ssid: !secret wifi_ssid2
+logger:
+ota:
+api:  
+web_server:
+
+external_components:
+  # https://github.com/nickolay/esphome-lilygo-t547plus
+  - source: github://nickolay/esphome-lilygo-t547plus
+    components: ["t547"]
+  # https://github.com/kaeltis/esphome-lilygo-t547plus
+  - source: github://kaeltis/esphome-lilygo-t547plus
+    components: ["lilygo_t5_47_battery"]
+
+i2c:
+  - id: bus_a
+    sda: GPIO18
+    scl: GPIO17
+    frequency: 100khz
+    # There is some problems with i2c scan so turn scan off if problem appear on your board
+    scan: False
+
+time:
+  - platform: pcf8563
+    id: internal_clock
+    address: 0x51  
+    i2c_id: bus_a
+  - platform: homeassistant
+    id: time_homeassistant
+    on_time_sync:
+      then:
+        - pcf8563.write_time
+
+binary_sensor:
+  - platform: gpio
+    pin: 
+      number: GPIO21 #was GPIO39 on the previous board
+      inverted: true
+    name: "Button 1"
+    on_press:
+      - logger.log: PhysButton Pressed
+
+sensor:
+  - platform: lilygo_t5_47_battery
+    id: battery_voltage
+    voltage:
+      name: "Battery Voltage"
+
+  - platform: template
+    name: "Battery Percentage"
+    id: battery_percentage
+    lambda: |-
+      // tweak values in mapping for calibration
+      // 4.1 = max voltage
+      // 3.3 = min voltage
+      float y = (id(battery_voltage).voltage->state - 3.3) * 100.0 / (4.1 - 3.3);
+      if (y < 100.0) { return y; } else { return 100.0; };
+
+  - #file: 'gfonts://Open+Sans'
+    file: https://github.com/ipython/xkcd-font/raw/master/xkcd-script/font/xkcd-script.ttf
+    id: fonthandwritten90
+    size: 90
+    glyphs:
+      [':', ".", '0', '1', '2', '3', '4', '5', '6', '7', '8', '9']
+  
+  - file: https://github.com/ipython/xkcd-font/raw/master/xkcd-script/font/xkcd-script.ttf
+    id: fonthandwritten300
+    size: 300
+    glyphs:
+      ['&', '@', '!', '?', ',', '.', '"', '%', '(', ')', '+', '-', '_', ':', '°', '0',
+       '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E',
+       'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S',
+       'T', 'U', 'V', 'W', 'X', 'Y', 'Z', ' ', 'a', 'b', 'c', 'd', 'e', 'f',
+       'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't',
+       'u', 'v', 'w', 'x', 'y', 'z', 'å', 'ä', 'ö', 'ü', 'Ä', 'Ö', 'Ü', '/', '€', '’', 'ß']      
+
+display:
+- platform: t547
+  update_interval: 60s
+  id: maindisplay
+  lambda: |-  
+        // Define the diameter and the center of the analog clock
+        int diameter = it.get_height();
+        float center_x = diameter / 2;
+        float center_y = diameter / 2;
+        
+        // Declare a function to draw a thick line (based on https://github.com/esphome/esphome/blob/6876c65edada3710687260c91302ccfa432d4f08/esphome/components/display/display.cpp#L18)
+        auto thick_line = [](display::Display & it, int x1, int y1, int x2, int y2, int thickness, Color color) {
+          const int32_t dx = abs(x2 - x1), sx = x1 < x2 ? 1 : -1;
+          const int32_t dy = -abs(y2 - y1), sy = y1 < y2 ? 1 : -1;
+          int32_t err = dx + dy;
+
+          while (true) {
+            // instead of just a pixel, draw a whole circle
+            it.filled_circle(x1, y1, thickness, color);
+            if (x1 == x2 && y1 == y2)
+              break;
+            int32_t e2 = 2 * err;
+            if (e2 >= dy) {
+              err += dy;
+              x1 += sx;
+            }
+            if (e2 <= dx) {
+              err += dx;
+              y1 += sy;
+            }
+          }
+        };
+        
+        auto time = id(time_homeassistant).now();
+        
+        // Calculate the angles
+        float minute_angle = 2 * PI * (time.minute / 60.0);
+        float hour_angle = 2 * PI * ((time.hour % 12) / 12.0 + time.minute / 720.0);
+    
+        // Declare function to draw a hand
+        auto draw_hand = [=](display::Display & it, float angle, float length, int thickness) {
+                thick_line(it, center_x, center_y, center_x + length * sin(angle) , center_y - length * cos(angle), thickness, Color::WHITE); 
+        };
+
+        //Clear the screen
+        it.fill(Color::BLACK);
+
+        // Draw the numbers of the clock's face
+        for (int i = 1; i <= 12; i++) {
+            float ang = 2 * PI / 12 * i;
+            it.printf(center_x + diameter/2 * 0.85 * sin(ang ) , center_y - diameter/2 * 0.85 * cos(ang), id(fonthandwritten90), Color::WHITE, TextAlign::CENTER, "%i", i);
+            };
+        
+        // Draw the clock's hands 
+        draw_hand(it, minute_angle, diameter / 3, 3);
+        draw_hand(it, hour_angle, diameter / 4, 7);
+        
+        // Print a digital clock
+        it.strftime(800, -60, id(fonthandwritten300), TextAlign::TOP_CENTER, "%H", id(time_homeassistant).now());
+        it.strftime(800, it.get_height()+60, id(fonthandwritten300), TextAlign::BOTTOM_CENTER, "%M", id(time_homeassistant).now());
+
+
